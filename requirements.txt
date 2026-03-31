@@ -1,2 +1,4 @@
-requests
-supabase
+requests>=2.31.0
+supabase-py>=2.1.0
+feedparser>=6.0.10
+python-dotenv>=1.0.0
