@@ -89,6 +89,7 @@
 #     print("🏁 完成")
 import os
 import requests
+import feedparser
 from supabase import create_client
 
 # ===================== 环境变量 =====================
@@ -106,26 +107,42 @@ except Exception as e:
     print("❌ 数据库连接失败:", e)
     supabase = None
 
-# ===================== 获取文章列表 =====================
-def get_articles():
+# ===================== 获取公众号列表 =====================
+def get_accounts():
     url = f"{WECHAT2RSS_URL}/list?page=1&size=100&k={WECHAT2RSS_KEY}"
-    print("🔗 请求地址:", url)
+    print("🔗 请求公众号列表:", url)
 
     try:
         res = requests.get(url, timeout=15)
         print("✅ 状态码:", res.status_code)
-        json_data = res.json()
-        print("📦 返回原始 JSON:", json_data)  # 调试关键
+        data = res.json()
+        print("📦 返回原始 JSON:", data)
 
-        articles = json_data.get("list", [])
-        if not articles:
-            print("📭 文章列表为空，请确认后台已经添加公众号并抓取文章")
-        return articles
+        accounts = data.get("data", [])
+        if not accounts:
+            print("📭 公众号列表为空，请确认 RSS_TOKEN 正确且后台有账号")
+        return accounts
     except Exception as e:
-        print("❌ 获取文章失败:", e)
+        print("❌ 获取公众号列表失败:", e)
         return []
 
-# ===================== 获取阅读量 =====================
+# ===================== 从 RSS feed 获取文章 =====================
+def fetch_articles_from_feed(feed_url, account_name):
+    articles = []
+    try:
+        feed = feedparser.parse(feed_url)
+        for entry in feed.entries:
+            articles.append({
+                "title": entry.title,
+                "url": entry.link,
+                "publish_time": entry.get("published", ""),
+                "account_name": account_name
+            })
+    except Exception as e:
+        print(f"❌ 解析 RSS feed 失败 ({feed_url}):", e)
+    return articles
+
+# ===================== 获取阅读量/点赞/评论 =====================
 def get_article_data(article_url):
     try:
         resp = requests.get(
@@ -140,7 +157,7 @@ def get_article_data(article_url):
         print("❌ 获取文章数据失败:", e)
         return 0, 0, 0
 
-# ===================== 保存数据库 =====================
+# ===================== 保存文章到 Supabase =====================
 def save_to_db(article):
     if not supabase:
         print("⚠️ 数据库未连接，跳过保存")
@@ -148,7 +165,7 @@ def save_to_db(article):
 
     title = article.get("title", "")
     url = article.get("url", "")
-    publish_time = article.get("created_at", "")
+    publish_time = article.get("publish_time", "")
     account_name = article.get("account_name", "unknown")
 
     if not title or not url:
@@ -173,15 +190,27 @@ def save_to_db(article):
 
 # ===================== 主程序 =====================
 if __name__ == "__main__":
-    print("🚀 开始抓取...")
-    articles = get_articles()
-    print(f"📝 获取到文章数量: {len(articles)}")
+    print("🚀 开始抓取公众号文章...")
 
-    for art in articles:
-        print("🔹 文章标题:", art.get("title"))
-        print("🔹 文章 URL:", art.get("url"))
-        print("🔹 公众号:", art.get("account_name"))
-        print("🔹 发布时间:", art.get("created_at"))
+    accounts = get_accounts()
+    all_articles = []
+
+    for acc in accounts:
+        feed_url = acc.get("link")
+        account_name = acc.get("name", "unknown")
+        if not feed_url:
+            continue
+        print(f"🔹 抓取公众号: {account_name}, feed: {feed_url}")
+        articles = fetch_articles_from_feed(feed_url, account_name)
+        all_articles.extend(articles)
+
+    print(f"📝 获取到文章总数: {len(all_articles)}")
+
+    for art in all_articles:
+        print("🔹 标题:", art["title"])
+        print("🔹 URL:", art["url"])
+        print("🔹 公众号:", art["account_name"])
+        print("🔹 发布时间:", art["publish_time"])
         save_to_db(art)
 
     print("🏁 完成")
