@@ -16,22 +16,19 @@ except Exception as e:
     print("数据库连接失败:", e)
     supabase = None
 
-# ===================== 【修复】正确获取文章 =====================
+# ===================== 【终极修复】正确接口 =====================
 def get_articles():
-    # ✅ 这里是 FIX：正确接口是 /api/entries
-    url = f"{WECHAT2RSS_URL}/api/entries?key={WECHAT2RSS_KEY}"
+    # 直接拼接，不绕弯
+    url = WECHAT2RSS_URL.rstrip("/") + f"/api/entries?key={WECHAT2RSS_KEY}"
+    print("🔗 最终请求地址:", url)  # 你会看到真实请求路径
+
     try:
         res = requests.get(url, timeout=15)
-        print("接口状态码:", res.status_code)
-        print("返回内容:", res.text[:500])
-
-        if res.status_code != 200:
-            return []
-
-        data = res.json()
-        return data if isinstance(data, list) else []
+        print("✅ 接口状态码:", res.status_code)
+        print("📄 返回内容:", res.text[:500])
+        return res.json() if res.status_code == 200 else []
     except Exception as e:
-        print("获取失败:", e)
+        print("❌ 错误:", e)
         return []
 
 # ===================== 获取阅读点赞 =====================
@@ -44,11 +41,7 @@ def get_article_data(article_url):
             timeout=10
         )
         data = resp.json()
-        return (
-            data.get("read", 0),
-            data.get("like", 0),
-            data.get("comment", 0)
-        )
+        return data.get("read", 0), data.get("like", 0), data.get("comment", 0)
     except:
         return 0, 0, 0
 
@@ -78,19 +71,19 @@ def save_to_db(article):
             "comment_count": comment
         }, on_conflict="url").execute()
         print(f"✅ 已保存: {title}")
-    except:
-        pass
+    except Exception as e:
+        print("❌ 保存失败:", e)
 
 # ===================== 主程序 =====================
 if __name__ == "__main__":
-    print("🚀 开始抓取...")
+    print("🚀 开始抓取公众号文章...")
     articles = get_articles()
 
     if not articles:
         print("📭 无文章")
     else:
-        print(f"✅ 文章数量: {len(articles)}")
+        print(f"📝 文章数量: {len(articles)}")
         for art in articles:
             save_to_db(art)
 
-    print("🏁 完成")
+    print("🏁 任务完成")
