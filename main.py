@@ -143,16 +143,47 @@ def fetch_articles_from_feed(feed_url, account_name):
     return articles
 
 # ===================== 获取阅读量/点赞/评论 =====================
+import requests
+
 def get_article_data(article_url):
+    """
+    获取文章阅读量、点赞数、评论数
+    如果 API key 无效或返回异常，则返回 0,0,0
+    """
     try:
+        print("🔗 请求极致了 API:", article_url)
+        print("🛡 使用的 API key:", JIZHILIAO_API_KEY)
+
         resp = requests.get(
             "https://www.dajiala.com/api/article/data",
             params={"url": article_url},
             headers={"Authorization": JIZHILIAO_API_KEY},
             timeout=10
         )
-        data = resp.json()
-        return data.get("read", 0), data.get("like", 0), data.get("comment", 0)
+
+        print("✅ 返回状态码:", resp.status_code)
+        if resp.status_code != 200:
+            print("❌ API 返回非 200 状态码，返回默认值 0,0,0")
+            return 0, 0, 0
+
+        # 尝试解析 JSON
+        try:
+            data = resp.json()
+        except ValueError:
+            print("❌ API 返回非 JSON 内容:", resp.text[:200])
+            return 0, 0, 0
+
+        # 如果返回包含错误信息，也返回默认值
+        if "error" in data or "message" in data and "Invalid API key" in data.get("message", ""):
+            print("❌ API 返回无效 key 错误")
+            return 0, 0, 0
+
+        read = data.get("read", 0)
+        like = data.get("like", 0)
+        comment = data.get("comment", 0)
+
+        return read, like, comment
+
     except Exception as e:
         print("❌ 获取文章数据失败:", e)
         return 0, 0, 0
