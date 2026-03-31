@@ -16,22 +16,22 @@ except Exception as e:
     print("数据库连接失败:", e)
     supabase = None
 
-# ===================== 【终极修复】正确接口 =====================
+# ===================== 【最终正确接口】 =====================
 def get_articles():
-    # 直接拼接，不绕弯
-    url = WECHAT2RSS_URL.rstrip("/") + f"/api/entries?key={WECHAT2RSS_KEY}"
-    print("🔗 最终请求地址:", url)  # 你会看到真实请求路径
+    url = f"{WECHAT2RSS_URL}/list?page=1&size=100&k={WECHAT2RSS_KEY}"
+    print("🔗 请求地址:", url)
 
     try:
         res = requests.get(url, timeout=15)
-        print("✅ 接口状态码:", res.status_code)
-        print("📄 返回内容:", res.text[:500])
-        return res.json() if res.status_code == 200 else []
-    except Exception as e:
-        print("❌ 错误:", e)
+        print("✅ 状态码:", res.status_code)
+        if res.status_code == 200:
+            data = res.json()
+            return data.get("list", [])
+        return []
+    except:
         return []
 
-# ===================== 获取阅读点赞 =====================
+# ===================== 获取阅读量 =====================
 def get_article_data(article_url):
     try:
         resp = requests.get(
@@ -41,11 +41,11 @@ def get_article_data(article_url):
             timeout=10
         )
         data = resp.json()
-        return data.get("read", 0), data.get("like", 0), data.get("comment", 0)
+        return data.get("read",0), data.get("like",0), data.get("comment",0)
     except:
-        return 0, 0, 0
+        return 0,0,0
 
-# ===================== 存入数据库 =====================
+# ===================== 保存数据库 =====================
 def save_to_db(article):
     if not supabase:
         return
@@ -71,12 +71,12 @@ def save_to_db(article):
             "comment_count": comment
         }, on_conflict="url").execute()
         print(f"✅ 已保存: {title}")
-    except Exception as e:
-        print("❌ 保存失败:", e)
+    except:
+        pass
 
 # ===================== 主程序 =====================
 if __name__ == "__main__":
-    print("🚀 开始抓取公众号文章...")
+    print("🚀 开始抓取...")
     articles = get_articles()
 
     if not articles:
@@ -86,4 +86,4 @@ if __name__ == "__main__":
         for art in articles:
             save_to_db(art)
 
-    print("🏁 任务完成")
+    print("🏁 完成")
