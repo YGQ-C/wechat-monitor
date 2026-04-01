@@ -3,7 +3,7 @@ import requests
 import feedparser
 from supabase import create_client
 import time
-from urllib.parse import quote
+from datetime import datetime
 
 # ===================== 环境变量 =====================
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -11,8 +11,10 @@ SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 WECHAT2RSS_URL = os.getenv("WECHAT2RSS_URL")
 WECHAT2RSS_KEY = os.getenv("WECHAT2RSS_KEY")
 DAJIALA_API_KEY = os.getenv("JIZHILIAO_API_KEY")  # 极致了 API Key
+RESEND_API_KEY = os.getenv("RESEND_API_KEY")     # 邮件发送可选
+EMAIL_TO = os.getenv("EMAIL_TO")                # 邮件收件人
 
-# ===================== 连接数据库 =====================
+# ===================== 数据库连接 =====================
 try:
     supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
     print("✅ 数据库连接成功")
@@ -26,7 +28,6 @@ def get_accounts():
     print("🔗 请求公众号列表:", url)
     try:
         res = requests.get(url, timeout=15)
-        print("✅ 状态码:", res.status_code)
         data = res.json()
         accounts = data.get("data", [])
         if not accounts:
@@ -36,7 +37,7 @@ def get_accounts():
         print("❌ 获取公众号列表失败:", e)
         return []
 
-# ===================== 从 RSS feed 获取文章 =====================
+# ===================== RSS文章抓取 =====================
 def fetch_articles_from_feed(feed_url, account_name):
     articles = []
     try:
@@ -54,49 +55,47 @@ def fetch_articles_from_feed(feed_url, account_name):
         print(f"❌ 解析 RSS 失败 ({feed_url}):", e)
     return articles
 
-# ===================== 调用极致了 API 获取文章数据 =====================
+# ===================== 极致了 API =====================
 def fetch_article_stats(article_url):
     try:
         api_url = "https://www.dajiala.com/fbmain/monitor/v3/read_zan_pro"
         headers = {"Content-Type": "application/json"}
         body = {"url": article_url, "key": DAJIALA_API_KEY, "verifycode": ""}
-
-        print("🔹 调用 API URL:", api_url)
         res = requests.post(api_url, headers=headers, json=body, timeout=10)
-        print("🔹 API 返回内容前200字:", res.text[:200])
-
-        if res.status_code != 200:
-            print("❌ 极致了 API 请求失败:", res.status_code)
-            return {"read_count": 0, "like_count": 0, "comment_count": 0, "share_count": 0}
-
         data = res.json()
         if data.get("code") != 0:
-            print("⚠️ API 返回错误:", data)
-            return {"read_count": 0, "like_count": 0, "comment_count": 0, "share_count": 0}
-
+            return {"read_count":0, "like_count":0, "comment_count":0, "share_count":0}
         stats = data.get("data", {})
         return {
-            "read_count": stats.get("read", 0),
-            "like_count": stats.get("zan", 0),
-            "comment_count": max(stats.get("comment_count", 0), 0),
-            "share_count": stats.get("share_num", 0)
+            "read_count": stats.get("read",0),
+            "like_count": stats.get("zan",0),
+            "comment_count": max(stats.get("comment_count",0),0),
+            "share_count": stats.get("share_num",0)
         }
-
     except Exception as e:
-        print("❌ 调用极致了 API 出错:", e)
-        return {"read_count": 0, "like_count": 0, "comment_count": 0, "share_count": 0}
+        print("❌ API 调用失败:", e)
+        return {"read_count":0,"like_count":0,"comment_count":0,"share_count":0}
 
 # ===================== 去重检查 =====================
 def is_exist(url):
     try:
-        res = supabase.table("wechat_articles") \
-            .select("id") \
-            .eq("url", url) \
-            .execute()
+        res = supabase.table("wechat_articles").select("id").eq("url", url).execute()
         return len(res.data) > 0
     except Exception as e:
         print("❌ 去重查询失败:", e)
         return False
+
+# ===================== 热度计算 =====================
+def compute_scores(stats):
+    read = stats.get("read_count", 0)
+    like = stats.get("like_count", 0)
+    comment = stats.get("comment_count", 0)
+    share = stats.get("share_count", 0)
+
+    hot_score = read*0.5 + like*0.3 + share*0.1 + comment*0.1
+    interact_score = (like + comment + share) / max(read,1)
+    abnormal_score = (read + like + comment + share) / max(read,1)
+    return hot_score, interact_score, abnormal_score
 
 # ===================== 保存文章 =====================
 def save_to_db(article):
@@ -114,22 +113,66 @@ def save_to_db(article):
         return
 
     stats = fetch_article_stats(url)
+    hot_score, interact_score, abnormal_score = compute_scores(stats)
 
     try:
         supabase.table("wechat_articles").insert({
             "title": article.get("title", ""),
             "url": url,
-            "account_id": article.get("account", ""),  # 可后期关联真实 wechat_accounts.account_id
+            "account_id": article.get("account", ""),  # 后续可关联真实公众号 id
             "publish_time": article.get("published", ""),
             "read_count": stats["read_count"],
             "like_count": stats["like_count"],
             "comment_count": stats["comment_count"],
-            "share_count": stats["share_count"]
+            "share_count": stats["share_count"],
+            "hot_score": hot_score,
+            "interact_score": interact_score,
+            "abnormal_score": abnormal_score
         }).execute()
-
         print("✅ 插入成功:", article.get("title"))
     except Exception as e:
         print("❌ 保存数据库失败:", e)
+
+# ===================== 生成排行榜 =====================
+def generate_hot_ranks(top_n=10):
+    rank_types = ["hot_score","interact_score","abnormal_score"]
+    for rank_type in rank_types:
+        res = supabase.table("wechat_articles").select("id, title, url, {}".format(rank_type)) \
+            .order(rank_type, desc=True).limit(top_n).execute()
+        for art in res.data:
+            supabase.table("hot_ranks").insert({
+                "article_id": art["id"],
+                "rank_type": rank_type.replace("_score",""),
+                "rank_value": art[rank_type],
+                "created_at": datetime.utcnow().date()
+            }).execute()
+
+# ===================== 发送日报 =====================
+def send_daily_report():
+    if not RESEND_API_KEY or not EMAIL_TO:
+        print("⚠️ 邮件未配置，跳过发送日报")
+        return
+    today = datetime.utcnow().date()
+    res = supabase.table("hot_ranks").select("article_id, rank_type, rank_value") \
+        .eq("created_at", today).execute()
+
+    content = "📊 今日公众号排行榜<br><br>"
+    for r in res.data:
+        art_res = supabase.table("wechat_articles").select("title, url").eq("id", r["article_id"]).execute()
+        if art_res.data:
+            title = art_res.data[0]["title"]
+            url = art_res.data[0]["url"]
+            content += f"{r['rank_type'].capitalize()}: {title} ({url}) - 分数: {r['rank_value']}<br>"
+
+    headers = {"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"}
+    body = {
+        "from": "no-reply@example.com",
+        "to": [EMAIL_TO],
+        "subject": f"公众号日报 {today}",
+        "html": content
+    }
+    requests.post("https://api.resend.com/emails", headers=headers, json=body)
+    print("✅ 日报已发送")
 
 # ===================== 主程序 =====================
 if __name__ == "__main__":
@@ -152,11 +195,11 @@ if __name__ == "__main__":
 
     for art in all_articles:
         print("🔹 标题:", art.get("title"))
-        print("🔹 URL:", art.get("link"))
-        print("🔹 公众号:", art.get("account"))
-        print("🔹 发布时间:", art.get("published"))
-
         save_to_db(art)
-        time.sleep(0.5)  # 避免短时间 API 调用过多
+
+    print("📝 生成排行榜...")
+    generate_hot_ranks()
+    print("📩 发送日报邮件...")
+    send_daily_report()
 
     print("🏁 完成")
