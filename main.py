@@ -3,7 +3,7 @@ import requests
 import feedparser
 from supabase import create_client
 import time
-from datetime import datetime
+from datetime import datetime, date
 
 # ===================== 环境变量 =====================
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -11,209 +11,209 @@ SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 WECHAT2RSS_URL = os.getenv("WECHAT2RSS_URL")
 WECHAT2RSS_KEY = os.getenv("WECHAT2RSS_KEY")
 DAJIALA_API_KEY = os.getenv("JIZHILIAO_API_KEY")
-RESEND_API_KEY = os.getenv("RESEND_API_KEY")  # 邮件发送，可选
-EMAIL_TO = os.getenv("EMAIL_TO")             # 收件人邮箱，可逗号分隔
+RESEND_API_KEY = os.getenv("RESEND_API_KEY")
+EMAIL_TO = os.getenv("EMAIL_TO")
 
-# ===================== 连接数据库 =====================
-try:
-    supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
-    print("✅ 数据库连接成功")
-except Exception as e:
-    print("❌ 数据库连接失败:", e)
-    supabase = None
+# ===================== 数据库 =====================
+supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+print("✅ 数据库连接成功")
 
-# ===================== 获取公众号列表 =====================
+# ===================== 获取公众号 =====================
 def get_accounts():
     url = f"{WECHAT2RSS_URL}/list?page=1&size=100&k={WECHAT2RSS_KEY}"
-    print("🔗 请求公众号列表:", url)
-    try:
-        res = requests.get(url, timeout=15)
-        print("✅ 状态码:", res.status_code)
-        data = res.json()
-        accounts = data.get("data", [])
-        if not accounts:
-            print("📭 公众号列表为空")
-        return accounts
-    except Exception as e:
-        print("❌ 获取公众号列表失败:", e)
-        return []
+    res = requests.get(url, timeout=15)
+    return res.json().get("data", [])
 
-# ===================== 从 RSS feed 获取文章（测试阶段限制5篇） =====================
-def fetch_articles_from_feed(feed_url, account_name, limit=5):
+# ===================== 抓文章 =====================
+def fetch_articles(feed_url, account_name, limit=5):
     articles = []
-    try:
-        feed = feedparser.parse(feed_url)
-        for i, entry in enumerate(feed.entries):
-            if i >= limit:
-                break
-            art = {
-                "title": getattr(entry, "title", ""),
-                "link": getattr(entry, "link", ""),
-                "published": getattr(entry, "published", ""),
-                "account": account_name
-            }
-            if art["link"]:
-                articles.append(art)
-    except Exception as e:
-        print(f"❌ 解析 RSS 失败 ({feed_url}):", e)
+    feed = feedparser.parse(feed_url)
+
+    for i, entry in enumerate(feed.entries):
+        if i >= limit:
+            break
+
+        articles.append({
+            "title": entry.title,
+            "link": entry.link,
+            "published": getattr(entry, "published", ""),
+            "account": account_name
+        })
+
     return articles
 
-# ===================== 调用极致了 API 获取文章数据 =====================
-def fetch_article_stats(article_url):
+# ===================== 极致了数据 =====================
+def fetch_stats(url):
     try:
         api_url = "https://www.dajiala.com/fbmain/monitor/v3/read_zan_pro"
-        headers = {"Content-Type": "application/json"}
-        body = {"url": article_url, "key": DAJIALA_API_KEY, "verifycode": ""}
+        body = {"url": url, "key": DAJIALA_API_KEY, "verifycode": ""}
 
-        res = requests.post(api_url, headers=headers, json=body, timeout=10)
+        res = requests.post(api_url, json=body, timeout=10).json()
+        data = res.get("data", {})
 
-        if res.status_code != 200:
-            print("❌ 极致了 API 请求失败:", res.status_code)
-            return {"read_count": 0, "like_count": 0, "comment_count": 0, "share_count": 0}
-
-        data = res.json()
-        if data.get("code") != 0:
-            print("⚠️ API 返回错误:", data)
-            return {"read_count": 0, "like_count": 0, "comment_count": 0, "share_count": 0}
-
-        stats = data.get("data", {})
         return {
-            "read_count": stats.get("read", 0),
-            "like_count": stats.get("zan", 0),
-            "comment_count": max(stats.get("comment_count", 0), 0),
-            "share_count": stats.get("share_num", 0)
+            "read": data.get("read", 0),
+            "like": data.get("zan", 0),
+            "comment": max(data.get("comment_count", 0), 0),
+            "share": data.get("share_num", 0)
         }
+    except:
+        return {"read":0,"like":0,"comment":0,"share":0}
 
-    except Exception as e:
-        print("❌ 调用极致了 API 出错:", e)
-        return {"read_count": 0, "like_count": 0, "comment_count": 0, "share_count": 0}
+# ===================== 计算指标 =====================
+def compute(stats):
+    read = stats["read"]
+    like = stats["like"]
+    comment = stats["comment"]
+    share = stats["share"]
 
-# ===================== 去重检查 =====================
+    hot = read*0.5 + like*0.3 + share*0.1 + comment*0.1
+    interact = (like+comment+share)/max(read,1)
+    abnormal = (read+like+comment+share)/max(read,1)
+
+    return round(hot,2), round(interact,2), round(abnormal,2)
+
+# ===================== 去重 =====================
 def is_exist(url):
-    try:
-        res = supabase.table("wechat_articles").select("id").eq("url", url).execute()
-        return len(res.data) > 0
-    except Exception as e:
-        print("❌ 去重查询失败:", e)
-        return False
+    res = supabase.table("wechat_articles").select("id").eq("url", url).execute()
+    return len(res.data) > 0
 
-# ===================== 计算热度/互动/异常指数 =====================
-def compute_scores(stats):
-    read = stats.get("read_count", 0)
-    like = stats.get("like_count", 0)
-    comment = stats.get("comment_count", 0)
-    share = stats.get("share_count", 0)
+# ===================== 生成排行榜 =====================
+def generate_ranks():
+    today = date.today()
 
-    hot_score = read*0.5 + like*0.3 + share*0.1 + comment*0.1
-    interact_score = (like + comment + share) / max(read, 1)
-    abnormal_score = (read + like + comment + share) / max(read, 1)
+    # 取今天所有文章（关键：不是只看新数据）
+    res = supabase.table("wechat_articles").select("*").gte("created_at", str(today)).execute()
 
-    return round(hot_score,2), round(interact_score,2), round(abnormal_score,2)
-
-# ===================== 保存文章 =====================
-def save_to_db(article):
-    if not supabase:
-        print("❌ 数据库未连接")
+    articles = res.data
+    if not articles:
+        print("⚠️ 今日无文章")
         return
 
-    url = article.get("link")
-    if not url:
-        print("⚠️ 空 URL，跳过")
-        return
+    # 排序
+    hot_top = sorted(articles, key=lambda x: x["hot_score"], reverse=True)[:5]
+    interact_top = sorted(articles, key=lambda x: x["interact_score"], reverse=True)[:5]
+    abnormal_top = sorted(articles, key=lambda x: x["abnormal_score"], reverse=True)[:5]
 
-    if is_exist(url):
-        print("⚠️ 已存在，跳过:", url)
-        return
+    # 清空今天旧榜
+    supabase.table("hot_ranks").delete().gte("created_at", str(today)).execute()
 
-    stats = fetch_article_stats(url)
-    hot_score, interact_score, abnormal_score = compute_scores(stats)
-
-    try:
-        supabase.table("wechat_articles").insert({
-            "title": article.get("title", ""),
-            "url": url,
-            "account_id": article.get("account", ""),
-            "publish_time": article.get("published", ""),
-            "read_count": stats["read_count"],
-            "like_count": stats["like_count"],
-            "comment_count": stats["comment_count"],
-            "share_count": stats["share_count"],
-            "hot_score": hot_score,
-            "interact_score": interact_score,
-            "abnormal_score": abnormal_score
+    # 写入榜单
+    for art in hot_top:
+        supabase.table("hot_ranks").insert({
+            "article_id": art["id"],
+            "rank_type": "hot",
+            "rank_value": art["hot_score"],
+            "created_at": today
         }).execute()
 
-        print(f"✅ 插入成功: {article.get('title')} | hot:{hot_score} interact:{interact_score} abnormal:{abnormal_score}")
-    except Exception as e:
-        print("❌ 保存数据库失败:", e)
+    for art in interact_top:
+        supabase.table("hot_ranks").insert({
+            "article_id": art["id"],
+            "rank_type": "interact",
+            "rank_value": art["interact_score"],
+            "created_at": today
+        }).execute()
 
-# ===================== 发送日报 =====================
+    for art in abnormal_top:
+        supabase.table("hot_ranks").insert({
+            "article_id": art["id"],
+            "rank_type": "abnormal",
+            "rank_value": art["abnormal_score"],
+            "created_at": today
+        }).execute()
+
+    print("📊 排行榜生成完成")
+
+# ===================== 发邮件 =====================
 def send_daily_report():
     if not RESEND_API_KEY or not EMAIL_TO:
-        print("⚠️ 邮件未配置，跳过发送日报")
+        print("⚠️ 邮件未配置")
         return
 
-    recipients = [email.strip() for email in EMAIL_TO.split(",")]
-    today = datetime.utcnow().date()
+    today = date.today()
 
-    try:
-        res = supabase.table("hot_ranks").select("article_id, rank_type, rank_value").eq("created_at", today).execute()
+    res = supabase.table("hot_ranks").select("*").eq("created_at", str(today)).execute()
+    ranks = res.data
 
-        if not res.data:
-            print("⚠️ 今日排行榜为空，邮件不发送")
-            return
+    if not ranks:
+        print("⚠️ 没有排行榜数据，邮件不发")
+        return
 
-        content = f"📊 今日公众号排行榜 ({today})<br><br>"
-        for r in res.data:
-            art_res = supabase.table("wechat_articles").select("title, url").eq("id", r["article_id"]).execute()
-            if art_res.data:
-                title = art_res.data[0]["title"]
-                url = art_res.data[0]["url"]
-                content += f"{r['rank_type'].capitalize()}: <a href='{url}'>{title}</a> - 分数: {r['rank_value']}<br>"
+    html = f"<h2>公众号日报 {today}</h2>"
 
-        headers = {"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"}
-        body = {
-            "from": "no-reply@example.com",
-            "to": recipients,
-            "subject": f"公众号日报 {today}",
-            "html": content
-        }
+    def render(rank_type, title):
+        items = [r for r in ranks if r["rank_type"] == rank_type]
+        html_block = f"<h3>{title}</h3>"
+        for r in items:
+            art = supabase.table("wechat_articles").select("title,url").eq("id", r["article_id"]).execute().data[0]
+            html_block += f"<p><a href='{art['url']}'>{art['title']}</a> - {r['rank_value']}</p>"
+        return html_block
 
-        response = requests.post("https://api.resend.com/emails", headers=headers, json=body)
-        if response.status_code in [200, 202]:
-            print("✅ 日报已发送成功！")
-        else:
-            print("❌ 邮件发送失败")
-            print("状态码:", response.status_code)
-            print("返回内容:", response.text)
+    html += render("hot", "🔥 热度榜")
+    html += render("interact", "💬 互动榜")
+    html += render("abnormal", "🚨 异常榜（爆文）")
 
-    except Exception as e:
-        print("❌ 发送日报异常:", e)
+    headers = {
+        "Authorization": f"Bearer {RESEND_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    body = {
+        "from": "onboarding@resend.dev",
+        "to": EMAIL_TO,
+        "subject": f"公众号日报 {today}",
+        "html": html
+    }
+
+    r = requests.post("https://api.resend.com/emails", headers=headers, json=body)
+
+    print("📧 邮件状态:", r.status_code)
+    print(r.text)
 
 # ===================== 主程序 =====================
 if __name__ == "__main__":
-    print("🚀 开始抓取公众号文章...")
+    print("🚀 开始运行")
 
     accounts = get_accounts()
-    all_articles = []
 
     for acc in accounts:
         feed_url = acc.get("link")
-        account_name = acc.get("name", "unknown")
-        if not feed_url:
-            continue
-        print(f"🔹 抓取公众号: {account_name}")
+        name = acc.get("name")
 
-        articles = fetch_articles_from_feed(feed_url, account_name, limit=5)
-        all_articles.extend(articles)
+        print(f"🔹 抓取公众号: {name}")
 
-    print(f"📝 获取到文章总数: {len(all_articles)}")
+        articles = fetch_articles(feed_url, name, limit=5)
 
-    for art in all_articles:
-        print(f"🔹 标题: {art.get('title')}")
-        print(f"🔹 URL: {art.get('link')}")
-        print(f"🔹 公众号: {art.get('account')}")
-        print(f"🔹 发布时间: {art.get('published')}")
+        for art in articles:
+            if is_exist(art["link"]):
+                continue
 
-        save_to_db(art)
-        time.sleep
+            stats = fetch_stats(art["link"])
+            hot, interact, abnormal = compute(stats)
+
+            supabase.table("wechat_articles").insert({
+                "title": art["title"],
+                "url": art["link"],
+                "account_id": art["account"],
+                "publish_time": art["published"],
+                "read_count": stats["read"],
+                "like_count": stats["like"],
+                "comment_count": stats["comment"],
+                "share_count": stats["share"],
+                "hot_score": hot,
+                "interact_score": interact,
+                "abnormal_score": abnormal
+            }).execute()
+
+            print(f"✅ 插入: {art['title']}")
+
+            time.sleep(1)
+
+    # 👉 核心：生成排行榜
+    generate_ranks()
+
+    # 👉 核心：发送邮件
+    send_daily_report()
+
+    print("🎉 完成")
