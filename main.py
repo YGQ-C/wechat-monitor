@@ -186,7 +186,7 @@ def get_article_data(url):
 # ===================== 去重检查 =====================
 def is_exist(url):
     try:
-        res = supabase.table("articles") \
+        res = supabase.table("wechat_articles") \
             .select("id") \
             .eq("url", url) \
             .execute()
