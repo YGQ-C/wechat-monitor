@@ -91,11 +91,11 @@ import os
 import requests
 import feedparser
 from supabase import create_client
+from bs4 import BeautifulSoup
 
 # ===================== 环境变量 =====================
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
-JIZHILIAO_API_KEY = os.getenv("JIZHILIAO_API_KEY")
 WECHAT2RSS_URL = os.getenv("WECHAT2RSS_URL")
 WECHAT2RSS_KEY = os.getenv("WECHAT2RSS_KEY")
 
@@ -116,12 +116,12 @@ def get_accounts():
         res = requests.get(url, timeout=15)
         print("✅ 状态码:", res.status_code)
         data = res.json()
-        print("📦 返回原始 JSON:", data)
 
         accounts = data.get("data", [])
         if not accounts:
-            print("📭 公众号列表为空，请确认 RSS_TOKEN 正确且后台有账号")
+            print("📭 公众号列表为空")
         return accounts
+
     except Exception as e:
         print("❌ 获取公众号列表失败:", e)
         return []
@@ -129,25 +129,27 @@ def get_accounts():
 # ===================== 从 RSS feed 获取文章 =====================
 def fetch_articles_from_feed(feed_url, account_name):
     articles = []
+
     try:
         feed = feedparser.parse(feed_url)
+
         for entry in feed.entries:
-            articles.append({
-                "title": entry.title,
-                "url": entry.link,
-                "publish_time": entry.get("published", ""),
-                "account_name": account_name
-            })
+            art = {
+                "title": getattr(entry, "title", ""),
+                "link": getattr(entry, "link", ""),
+                "published": getattr(entry, "published", ""),
+                "account": account_name
+            }
+
+            if art["link"]:  # 防止空链接
+                articles.append(art)
+
     except Exception as e:
-        print(f"❌ 解析 RSS feed 失败 ({feed_url}):", e)
+        print(f"❌ 解析 RSS 失败 ({feed_url}):", e)
+
     return articles
 
-# ===================== 获取阅读量/点赞/评论 =====================
-import requests
-
-import requests
-from bs4 import BeautifulSoup
-
+# ===================== 获取文章详情 =====================
 def get_article_data(url):
     try:
         headers = {
@@ -158,60 +160,77 @@ def get_article_data(url):
         print("✅ 返回状态码:", res.status_code)
 
         if res.status_code != 200:
-            print("❌ 请求失败")
             return None
 
-        html = res.text
+        soup = BeautifulSoup(res.text, "html.parser")
 
-        # 解析 HTML
-        soup = BeautifulSoup(html, "html.parser")
-
-        # 标题
         title = soup.find("h1")
-        title = title.text.strip() if title else "无标题"
+        title = title.text.strip() if title else ""
 
-        # 正文
         content = soup.find("div", id="js_content")
         content = content.get_text(strip=True) if content else ""
 
-        # 作者
         author = soup.find("a", id="js_name")
         author = author.text.strip() if author else ""
 
         return {
             "title": title,
-            "content": content[:5000],  # 防止过长
-            "author": author,
-            "url": url
+            "content": content[:5000],
+            "author": author
         }
 
     except Exception as e:
         print("❌ 获取文章数据失败:", e)
         return None
 
-# ===================== 保存文章到 Supabase =====================
-def save_to_db(article):
-    url = article["link"]
+# ===================== 去重检查 =====================
+def is_exist(url):
+    try:
+        res = supabase.table("articles") \
+            .select("id") \
+            .eq("url", url) \
+            .execute()
 
-    data = get_article_data(url)
-    if not data:
-        print("❌ 获取文章失败")
+        return len(res.data) > 0
+
+    except Exception as e:
+        print("❌ 去重查询失败:", e)
+        return False
+
+# ===================== 保存文章 =====================
+def save_to_db(article):
+    if not supabase:
+        print("❌ 数据库未连接")
         return
 
-    content = data.get("content", "")
-    author = data.get("author", "")
+    url = article.get("link")
+
+    if not url:
+        print("⚠️ 空 URL，跳过")
+        return
+
+    # ✅ 去重
+    if is_exist(url):
+        print("⚠️ 已存在，跳过:", url)
+        return
+
+    # ✅ 抓正文
+    data = get_article_data(url)
+    if not data:
+        print("❌ 抓取文章失败:", url)
+        return
 
     try:
-        res = supabase.table("articles").insert({
-            "title": article["title"],
+        supabase.table("articles").insert({
+            "title": article.get("title", ""),
             "url": url,
-            "account": article["account"],
-            "publish_time": article["published"],
-            "content": content,
-            "author": author
+            "account": article.get("account", ""),
+            "publish_time": article.get("published", ""),
+            "content": data.get("content", ""),
+            "author": data.get("author", "")
         }).execute()
 
-        print("✅ 插入成功:", article["title"])
+        print("✅ 插入成功:", article.get("title"))
 
     except Exception as e:
         print("❌ 保存数据库失败:", e)
@@ -226,19 +245,23 @@ if __name__ == "__main__":
     for acc in accounts:
         feed_url = acc.get("link")
         account_name = acc.get("name", "unknown")
+
         if not feed_url:
             continue
-        print(f"🔹 抓取公众号: {account_name}, feed: {feed_url}")
+
+        print(f"🔹 抓取公众号: {account_name}")
+
         articles = fetch_articles_from_feed(feed_url, account_name)
         all_articles.extend(articles)
 
     print(f"📝 获取到文章总数: {len(all_articles)}")
 
     for art in all_articles:
-        print("🔹 标题:", art["title"])
-        print("🔹 URL:", art["url"])
-        print("🔹 公众号:", art["account_name"])
-        print("🔹 发布时间:", art["publish_time"])
+        print("🔹 标题:", art.get("title"))
+        print("🔹 URL:", art.get("link"))
+        print("🔹 公众号:", art.get("account"))
+        print("🔹 发布时间:", art.get("published"))
+
         save_to_db(art)
 
     print("🏁 完成")
