@@ -212,4 +212,8 @@ if __name__ == "__main__":
     for art in all_articles:
         print(f"🔹 标题: {art.get('title')}")
         print(f"🔹 URL: {art.get('link')}")
-        print(f"🔹 公众号
+        print(f"🔹 公众号: {art.get('account')}")
+        print(f"🔹 发布时间: {art.get('published')}")
+
+        save_to_db(art)
+        time.sleep
