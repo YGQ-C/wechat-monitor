@@ -214,27 +214,18 @@ def save_to_db(article):
         print("⚠️ 已存在，跳过:", url)
         return
 
-    # ✅ 抓正文
-    data = get_article_data(url)
-    if not data:
-        print("❌ 抓取文章失败:", url)
-        return
-
     try:
         supabase.table("wechat_articles").insert({
             "title": article.get("title", ""),
             "url": url,
-            "account": article.get("account", ""),
-            "publish_time": article.get("published", ""),
-            "content": data.get("content", ""),
-            "author": data.get("author", "")
+            "account_id": article.get("account", ""),  # ✅ 改这里
+            "publish_time": article.get("published", "")
         }).execute()
 
         print("✅ 插入成功:", article.get("title"))
 
     except Exception as e:
         print("❌ 保存数据库失败:", e)
-
 # ===================== 主程序 =====================
 if __name__ == "__main__":
     print("🚀 开始抓取公众号文章...")
