@@ -11,7 +11,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 WECHAT2RSS_URL = os.getenv("WECHAT2RSS_URL")
 WECHAT2RSS_KEY = os.getenv("WECHAT2RSS_KEY")
-DAJIALA_API_KEY = os.getenv("JIZHILIAO_API_KEY")  # 注意你的环境变量名字
+DAJIALA_API_KEY = os.getenv("JIZHILIAO_API_KEY")  # 注意你环境变量名字是 JIZHILIAO_API_KEY
 
 # ===================== 连接数据库 =====================
 try:
@@ -60,9 +60,13 @@ def fetch_article_stats(article_url):
     try:
         encoded_url = quote(article_url, safe='')
         api_url = f"https://www.dajiala.com/api/article?url={encoded_url}&key={DAJIALA_API_KEY}"
-        res = requests.get(api_url, timeout=10)
-        
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) Chrome/116.0.5845.141 Safari/537.36",
+            "Referer": "https://www.dajiala.com/"
+        }
         print("🔹 调用 API URL:", api_url)
+        res = requests.get(api_url, headers=headers, timeout=10)
         print("🔹 API 返回内容:", res.text[:200])  # 只打印前 200 字
 
         if res.status_code != 200:
@@ -73,19 +77,18 @@ def fetch_article_stats(article_url):
             print("⚠️ 极致了 API 返回空数据:", article_url)
             return {"read_count": 0, "like_count": 0, "comment_count": 0, "share_count": 0}
 
-        # 尝试解析 JSON
         try:
             data = res.json()
+            return {
+                "read_count": data.get("read", 0),
+                "like_count": data.get("zan", 0),
+                "comment_count": max(data.get("comment_count", 0), 0),
+                "share_count": data.get("share_num", 0)
+            }
         except Exception as e:
             print("⚠️ 极致了 API 返回非 JSON 数据:", e, "URL:", article_url)
             return {"read_count": 0, "like_count": 0, "comment_count": 0, "share_count": 0}
 
-        return {
-            "read_count": data.get("read", 0),
-            "like_count": data.get("zan", 0),
-            "comment_count": max(data.get("comment_count", 0), 0),
-            "share_count": data.get("share_num", 0)
-        }
     except Exception as e:
         print("❌ 调用极致了 API 出错:", e)
         return {"read_count": 0, "like_count": 0, "comment_count": 0, "share_count": 0}
@@ -123,7 +126,7 @@ def save_to_db(article):
         supabase.table("wechat_articles").insert({
             "title": article.get("title", ""),
             "url": url,
-            "account_id": article.get("account", ""),  # 可以改为实际 account_id 对应表
+            "account_id": article.get("account", ""),
             "publish_time": article.get("published", ""),
             "read_count": stats["read_count"],
             "like_count": stats["like_count"],
