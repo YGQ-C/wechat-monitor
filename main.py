@@ -4,13 +4,14 @@ import feedparser
 from supabase import create_client
 from bs4 import BeautifulSoup
 import time
+from urllib.parse import quote
 
 # ===================== 环境变量 =====================
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 WECHAT2RSS_URL = os.getenv("WECHAT2RSS_URL")
 WECHAT2RSS_KEY = os.getenv("WECHAT2RSS_KEY")
-DAJIALA_API_KEY = os.getenv("DAJIALA_API_KEY")
+DAJIALA_API_KEY = os.getenv("JIZHILIAO_API_KEY")  # 注意你环境变量名字是 JIZHILIAO_API_KEY
 
 # ===================== 连接数据库 =====================
 try:
@@ -56,22 +57,28 @@ def fetch_articles_from_feed(feed_url, account_name):
 
 # ===================== 调用极致了 API 获取文章数据 =====================
 def fetch_article_stats(article_url):
-    api_url = f"https://www.dajiala.com/api/article?url={article_url}&key={DAJIALA_API_KEY}"
     try:
+        encoded_url = quote(article_url, safe='')
+        api_url = f"https://www.dajiala.com/api/article?url={encoded_url}&key={DAJIALA_API_KEY}"
         res = requests.get(api_url, timeout=10)
         if res.status_code != 200:
             print("❌ 极致了 API 请求失败:", res.status_code)
-            return None
+            return {"read_count": 0, "like_count": 0, "comment_count": 0, "share_count": 0}
+
+        if not res.text.strip():
+            print("⚠️ 极致了 API 返回空数据:", article_url)
+            return {"read_count": 0, "like_count": 0, "comment_count": 0, "share_count": 0}
+
         data = res.json()
         return {
             "read_count": data.get("read", 0),
             "like_count": data.get("zan", 0),
-            "comment_count": max(data.get("comment_count", 0), 0),  # -1 表示未开通评论
+            "comment_count": max(data.get("comment_count", 0), 0),
             "share_count": data.get("share_num", 0)
         }
     except Exception as e:
         print("❌ 调用极致了 API 出错:", e)
-        return None
+        return {"read_count": 0, "like_count": 0, "comment_count": 0, "share_count": 0}
 
 # ===================== 去重检查 =====================
 def is_exist(url):
@@ -101,8 +108,6 @@ def save_to_db(article):
         return
 
     stats = fetch_article_stats(url)
-    if not stats:
-        stats = {"read_count": 0, "like_count": 0, "comment_count": 0, "share_count": 0}
 
     try:
         supabase.table("wechat_articles").insert({
@@ -146,6 +151,6 @@ if __name__ == "__main__":
         print("🔹 发布时间:", art.get("published"))
 
         save_to_db(art)
-        time.sleep(0.2)  # 避免短时间 API 调用过多
+        time.sleep(0.5)  # 避免短时间 API 调用过多
 
     print("🏁 完成")
