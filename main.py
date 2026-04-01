@@ -191,32 +191,28 @@ def get_article_data(url):
 
 # ===================== 保存文章到 Supabase =====================
 def save_to_db(article):
-    if not supabase:
-        print("⚠️ 数据库未连接，跳过保存")
-        return
-
-    title = article.get("title", "")
-    url = article.get("url", "")
-    publish_time = article.get("publish_time", "")
-    account_name = article.get("account_name", "unknown")
-
-    if not title or not url:
-        print("⚠️ 文章标题或 URL 缺失，跳过")
-        return
+    url = article["link"]
 
     data = get_article_data(url)
+    if not data:
+        print("❌ 获取文章失败")
+        return
+
+    content = data.get("content", "")
+    author = data.get("author", "")
 
     try:
-        supabase.table("wechat_articles").upsert({
-            "title": title,
+        res = supabase.table("articles").insert({
+            "title": article["title"],
             "url": url,
-            "publish_time": publish_time,
-            "account_id": account_name,
-            "read_count": read,
-            "like_count": like,
-            "comment_count": comment
-        }, on_conflict="url").execute()
-        print(f"✅ 已保存: {title}")
+            "account": article["account"],
+            "publish_time": article["published"],
+            "content": content,
+            "author": author
+        }).execute()
+
+        print("✅ 插入成功:", article["title"])
+
     except Exception as e:
         print("❌ 保存数据库失败:", e)
 
