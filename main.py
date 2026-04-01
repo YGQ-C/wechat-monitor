@@ -221,7 +221,7 @@ def save_to_db(article):
         return
 
     try:
-        supabase.table("articles").insert({
+        supabase.table("wechat_articles").insert({
             "title": article.get("title", ""),
             "url": url,
             "account": article.get("account", ""),
