@@ -2,7 +2,6 @@ import os
 import requests
 import feedparser
 from supabase import create_client
-from bs4 import BeautifulSoup
 import time
 from urllib.parse import quote
 
@@ -11,7 +10,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 WECHAT2RSS_URL = os.getenv("WECHAT2RSS_URL")
 WECHAT2RSS_KEY = os.getenv("WECHAT2RSS_KEY")
-DAJIALA_API_KEY = os.getenv("JIZHILIAO_API_KEY")  # 注意你环境变量名字是 JIZHILIAO_API_KEY
+DAJIALA_API_KEY = os.getenv("JIZHILIAO_API_KEY")  # 极致了 API Key
 
 # ===================== 连接数据库 =====================
 try:
@@ -58,36 +57,30 @@ def fetch_articles_from_feed(feed_url, account_name):
 # ===================== 调用极致了 API 获取文章数据 =====================
 def fetch_article_stats(article_url):
     try:
-        encoded_url = quote(article_url, safe='')
-        api_url = f"https://www.dajiala.com/api/article?url={encoded_url}&key={DAJIALA_API_KEY}"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                          "(KHTML, like Gecko) Chrome/116.0.5845.141 Safari/537.36",
-            "Referer": "https://www.dajiala.com/"
-        }
+        api_url = "https://www.dajiala.com/fbmain/monitor/v3/read_zan_pro"
+        headers = {"Content-Type": "application/json"}
+        body = {"url": article_url, "key": DAJIALA_API_KEY, "verifycode": ""}
+
         print("🔹 调用 API URL:", api_url)
-        res = requests.get(api_url, headers=headers, timeout=10)
-        print("🔹 API 返回内容:", res.text[:200])  # 只打印前 200 字
+        res = requests.post(api_url, headers=headers, json=body, timeout=10)
+        print("🔹 API 返回内容前200字:", res.text[:200])
 
         if res.status_code != 200:
             print("❌ 极致了 API 请求失败:", res.status_code)
             return {"read_count": 0, "like_count": 0, "comment_count": 0, "share_count": 0}
 
-        if not res.text.strip():
-            print("⚠️ 极致了 API 返回空数据:", article_url)
+        data = res.json()
+        if data.get("code") != 0:
+            print("⚠️ API 返回错误:", data)
             return {"read_count": 0, "like_count": 0, "comment_count": 0, "share_count": 0}
 
-        try:
-            data = res.json()
-            return {
-                "read_count": data.get("read", 0),
-                "like_count": data.get("zan", 0),
-                "comment_count": max(data.get("comment_count", 0), 0),
-                "share_count": data.get("share_num", 0)
-            }
-        except Exception as e:
-            print("⚠️ 极致了 API 返回非 JSON 数据:", e, "URL:", article_url)
-            return {"read_count": 0, "like_count": 0, "comment_count": 0, "share_count": 0}
+        stats = data.get("data", {})
+        return {
+            "read_count": stats.get("read", 0),
+            "like_count": stats.get("zan", 0),
+            "comment_count": max(stats.get("comment_count", 0), 0),
+            "share_count": stats.get("share_num", 0)
+        }
 
     except Exception as e:
         print("❌ 调用极致了 API 出错:", e)
@@ -126,7 +119,7 @@ def save_to_db(article):
         supabase.table("wechat_articles").insert({
             "title": article.get("title", ""),
             "url": url,
-            "account_id": article.get("account", ""),
+            "account_id": article.get("account", ""),  # 可后期关联真实 wechat_accounts.account_id
             "publish_time": article.get("published", ""),
             "read_count": stats["read_count"],
             "like_count": stats["like_count"],
