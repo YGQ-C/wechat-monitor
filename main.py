@@ -11,7 +11,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 WECHAT2RSS_URL = os.getenv("WECHAT2RSS_URL")
 WECHAT2RSS_KEY = os.getenv("WECHAT2RSS_KEY")
-DAJIALA_API_KEY = os.getenv("JIZHILIAO_API_KEY")  # 注意你环境变量名字是 JIZHILIAO_API_KEY
+DAJIALA_API_KEY = os.getenv("JIZHILIAO_API_KEY")  # 注意你的环境变量名字
 
 # ===================== 连接数据库 =====================
 try:
@@ -61,6 +61,10 @@ def fetch_article_stats(article_url):
         encoded_url = quote(article_url, safe='')
         api_url = f"https://www.dajiala.com/api/article?url={encoded_url}&key={DAJIALA_API_KEY}"
         res = requests.get(api_url, timeout=10)
+        
+        print("🔹 调用 API URL:", api_url)
+        print("🔹 API 返回内容:", res.text[:200])  # 只打印前 200 字
+
         if res.status_code != 200:
             print("❌ 极致了 API 请求失败:", res.status_code)
             return {"read_count": 0, "like_count": 0, "comment_count": 0, "share_count": 0}
@@ -69,7 +73,13 @@ def fetch_article_stats(article_url):
             print("⚠️ 极致了 API 返回空数据:", article_url)
             return {"read_count": 0, "like_count": 0, "comment_count": 0, "share_count": 0}
 
-        data = res.json()
+        # 尝试解析 JSON
+        try:
+            data = res.json()
+        except Exception as e:
+            print("⚠️ 极致了 API 返回非 JSON 数据:", e, "URL:", article_url)
+            return {"read_count": 0, "like_count": 0, "comment_count": 0, "share_count": 0}
+
         return {
             "read_count": data.get("read", 0),
             "like_count": data.get("zan", 0),
@@ -113,7 +123,7 @@ def save_to_db(article):
         supabase.table("wechat_articles").insert({
             "title": article.get("title", ""),
             "url": url,
-            "account_id": article.get("account", ""),  # 注意这里要对应 account_id
+            "account_id": article.get("account", ""),  # 可以改为实际 account_id 对应表
             "publish_time": article.get("published", ""),
             "read_count": stats["read_count"],
             "like_count": stats["like_count"],
