@@ -157,9 +157,7 @@ def send_daily_report():
     today = datetime.utcnow().date()
 
     try:
-        # 查询当天排行榜
-        res = supabase.table("hot_ranks").select("article_id, rank_type, rank_value") \
-            .eq("created_at", today).execute()
+        res = supabase.table("hot_ranks").select("article_id, rank_type, rank_value").eq("created_at", today).execute()
 
         if not res.data:
             print("⚠️ 今日排行榜为空，邮件不发送")
@@ -212,6 +210,6 @@ if __name__ == "__main__":
     print(f"📝 获取到文章总数: {len(all_articles)}")
 
     for art in all_articles:
-        print("🔹 标题:", art.get("title"))
-        print("🔹 URL:", art.get("link"))
-        print("
+        print(f"🔹 标题: {art.get('title')}")
+        print(f"🔹 URL: {art.get('link')}")
+        print(f"🔹 公众号
