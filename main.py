@@ -3,12 +3,14 @@ import requests
 import feedparser
 from supabase import create_client
 from bs4 import BeautifulSoup
+import time
 
 # ===================== 环境变量 =====================
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 WECHAT2RSS_URL = os.getenv("WECHAT2RSS_URL")
 WECHAT2RSS_KEY = os.getenv("WECHAT2RSS_KEY")
+DAJIALA_API_KEY = os.getenv("DAJIALA_API_KEY")
 
 # ===================== 连接数据库 =====================
 try:
@@ -22,17 +24,14 @@ except Exception as e:
 def get_accounts():
     url = f"{WECHAT2RSS_URL}/list?page=1&size=100&k={WECHAT2RSS_KEY}"
     print("🔗 请求公众号列表:", url)
-
     try:
         res = requests.get(url, timeout=15)
         print("✅ 状态码:", res.status_code)
         data = res.json()
-
         accounts = data.get("data", [])
         if not accounts:
             print("📭 公众号列表为空")
         return accounts
-
     except Exception as e:
         print("❌ 获取公众号列表失败:", e)
         return []
@@ -40,10 +39,8 @@ def get_accounts():
 # ===================== 从 RSS feed 获取文章 =====================
 def fetch_articles_from_feed(feed_url, account_name):
     articles = []
-
     try:
         feed = feedparser.parse(feed_url)
-
         for entry in feed.entries:
             art = {
                 "title": getattr(entry, "title", ""),
@@ -51,47 +48,29 @@ def fetch_articles_from_feed(feed_url, account_name):
                 "published": getattr(entry, "published", ""),
                 "account": account_name
             }
-
-            if art["link"]:  # 防止空链接
+            if art["link"]:
                 articles.append(art)
-
     except Exception as e:
         print(f"❌ 解析 RSS 失败 ({feed_url}):", e)
-
     return articles
 
-# ===================== 获取文章详情 =====================
-def get_article_data(url):
+# ===================== 调用极致了 API 获取文章数据 =====================
+def fetch_article_stats(article_url):
+    api_url = f"https://www.dajiala.com/api/article?url={article_url}&key={DAJIALA_API_KEY}"
     try:
-        headers = {
-            "User-Agent": "Mozilla/5.0"
-        }
-
-        res = requests.get(url, headers=headers, timeout=10)
-        print("✅ 返回状态码:", res.status_code)
-
+        res = requests.get(api_url, timeout=10)
         if res.status_code != 200:
+            print("❌ 极致了 API 请求失败:", res.status_code)
             return None
-
-        soup = BeautifulSoup(res.text, "html.parser")
-
-        title = soup.find("h1")
-        title = title.text.strip() if title else ""
-
-        content = soup.find("div", id="js_content")
-        content = content.get_text(strip=True) if content else ""
-
-        author = soup.find("a", id="js_name")
-        author = author.text.strip() if author else ""
-
+        data = res.json()
         return {
-            "title": title,
-            "content": content[:5000],
-            "author": author
+            "read_count": data.get("read", 0),
+            "like_count": data.get("zan", 0),
+            "comment_count": max(data.get("comment_count", 0), 0),  # -1 表示未开通评论
+            "share_count": data.get("share_num", 0)
         }
-
     except Exception as e:
-        print("❌ 获取文章数据失败:", e)
+        print("❌ 调用极致了 API 出错:", e)
         return None
 
 # ===================== 去重检查 =====================
@@ -101,9 +80,7 @@ def is_exist(url):
             .select("id") \
             .eq("url", url) \
             .execute()
-
         return len(res.data) > 0
-
     except Exception as e:
         print("❌ 去重查询失败:", e)
         return False
@@ -115,28 +92,34 @@ def save_to_db(article):
         return
 
     url = article.get("link")
-
     if not url:
         print("⚠️ 空 URL，跳过")
         return
 
-    # ✅ 去重
     if is_exist(url):
         print("⚠️ 已存在，跳过:", url)
         return
+
+    stats = fetch_article_stats(url)
+    if not stats:
+        stats = {"read_count": 0, "like_count": 0, "comment_count": 0, "share_count": 0}
 
     try:
         supabase.table("wechat_articles").insert({
             "title": article.get("title", ""),
             "url": url,
-            "account_id": article.get("account", ""),  # ✅ 改这里
-            "publish_time": article.get("published", "")
+            "account_id": article.get("account", ""),  # 注意这里要对应 account_id
+            "publish_time": article.get("published", ""),
+            "read_count": stats["read_count"],
+            "like_count": stats["like_count"],
+            "comment_count": stats["comment_count"],
+            "share_count": stats["share_count"]
         }).execute()
 
         print("✅ 插入成功:", article.get("title"))
-
     except Exception as e:
         print("❌ 保存数据库失败:", e)
+
 # ===================== 主程序 =====================
 if __name__ == "__main__":
     print("🚀 开始抓取公众号文章...")
@@ -147,10 +130,8 @@ if __name__ == "__main__":
     for acc in accounts:
         feed_url = acc.get("link")
         account_name = acc.get("name", "unknown")
-
         if not feed_url:
             continue
-
         print(f"🔹 抓取公众号: {account_name}")
 
         articles = fetch_articles_from_feed(feed_url, account_name)
@@ -165,5 +146,6 @@ if __name__ == "__main__":
         print("🔹 发布时间:", art.get("published"))
 
         save_to_db(art)
+        time.sleep(0.2)  # 避免短时间 API 调用过多
 
     print("🏁 完成")
