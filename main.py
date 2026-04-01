@@ -204,7 +204,7 @@ def save_to_db(article):
         print("⚠️ 文章标题或 URL 缺失，跳过")
         return
 
-    read, like, comment = get_article_data(url)
+   data = get_article_data(url)
 
     try:
         supabase.table("wechat_articles").upsert({
