@@ -131,7 +131,7 @@ def send_daily_report():
         print("⚠️ 邮件未配置")
         return
 
-    today = date.today()
+    today = date.today().isoformat() 
 
     res = supabase.table("hot_ranks").select("*").eq("created_at", str(today)).execute()
     ranks = res.data
