@@ -3,7 +3,8 @@ import requests
 import feedparser
 from supabase import create_client
 import time
-from datetime import datetime, date, timezone
+from datetime import datetime, timezone
+import time as time_module
 
 # ===================== 环境变量 =====================
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -18,24 +19,28 @@ EMAIL_TO = os.getenv("EMAIL_TO")
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 print("✅ 数据库连接成功")
 
-# ===================== 时间处理 =====================
-def format_publish_time(published):
-    if not published:
-        return None
-
-    if isinstance(published, time.struct_time):
-        return datetime(*published[:6]).isoformat(timespec='seconds')
-
-    if isinstance(published, str):
-        return published
-
-    return str(published)
+# ===================== 时间工具 =====================
+def now_utc():
+    return datetime.now(timezone.utc).isoformat()
 
 def today_utc():
     return datetime.now(timezone.utc).date().isoformat()
 
 def today_start_utc():
     return datetime.now(timezone.utc).date().isoformat() + "T00:00:00Z"
+
+# ===================== 时间格式化 =====================
+def format_publish_time(published):
+    if not published:
+        return None
+
+    if isinstance(published, time_module.struct_time):
+        return datetime(*published[:6]).isoformat(timespec='seconds')
+
+    if isinstance(published, str):
+        return published
+
+    return str(published)
 
 # ===================== 获取公众号 =====================
 def get_accounts():
@@ -62,7 +67,7 @@ def fetch_articles(feed_url, account_name, limit=5):
 
     return articles
 
-# ===================== 极致了数据 =====================
+# ===================== 数据抓取 =====================
 def fetch_stats(url):
     try:
         api_url = "https://www.dajiala.com/fbmain/monitor/v3/read_zan_pro"
@@ -84,7 +89,7 @@ def fetch_stats(url):
         print("❌ fetch_stats error:", e)
         return {"read":0,"like":0,"comment":0,"share":0}
 
-# ===================== 计算指标 =====================
+# ===================== 指标计算 =====================
 def compute(stats):
     read = stats["read"]
     like = stats["like"]
@@ -120,12 +125,12 @@ def generate_ranks():
         print("⚠️ 今日无文章")
         return
 
-    # 排序
+    print(f"📊 今日文章数: {len(articles)}")
+
     hot_top = sorted(articles, key=lambda x: x["hot_score"], reverse=True)[:5]
     interact_top = sorted(articles, key=lambda x: x["interact_score"], reverse=True)[:5]
     abnormal_top = sorted(articles, key=lambda x: x["abnormal_score"], reverse=True)[:5]
 
-    # 清空当天榜单（精确匹配）
     supabase.table("hot_ranks") \
         .delete() \
         .eq("created_at", today) \
@@ -165,10 +170,9 @@ def send_daily_report():
 
     ranks = res.data
     if not ranks:
-        print("⚠️ 没有排行榜数据，邮件不发")
+        print("⚠️ 没有排行榜数据")
         return
 
-    # 🚀 一次性查所有文章（解决N+1问题）
     article_ids = [r["article_id"] for r in ranks]
 
     arts_res = supabase.table("wechat_articles") \
@@ -182,20 +186,18 @@ def send_daily_report():
 
     def render(rank_type, title):
         items = [r for r in ranks if r["rank_type"] == rank_type]
-        html_block = f"<h3>{title}</h3>"
+        block = f"<h3>{title}</h3>"
 
         for r in items:
             art = art_map.get(r["article_id"])
-            if not art:
-                continue
+            if art:
+                block += f"<p><a href='{art['url']}'>{art['title']}</a> - {r['rank_value']}</p>"
 
-            html_block += f"<p><a href='{art['url']}'>{art['title']}</a> - {r['rank_value']}</p>"
-
-        return html_block
+        return block
 
     html += render("hot", "🔥 热度榜")
     html += render("interact", "💬 互动榜")
-    html += render("abnormal", "🚨 异常榜（爆文）")
+    html += render("abnormal", "🚨 异常榜")
 
     headers = {
         "Authorization": f"Bearer {RESEND_API_KEY}",
@@ -229,7 +231,10 @@ if __name__ == "__main__":
         articles = fetch_articles(feed_url, name, limit=5)
 
         for art in articles:
+            print("📰 抓到:", art["title"])
+
             if is_exist(art["link"]):
+                print("⚠️ 已存在:", art["title"])
                 continue
 
             stats = fetch_stats(art["link"])
@@ -239,14 +244,15 @@ if __name__ == "__main__":
                 "title": art["title"],
                 "url": art["link"],
                 "account_id": art["account"],
-                "publish_time": format_publish_time(art.get("published")),  # ✅ 修复
+                "publish_time": format_publish_time(art.get("published")),
                 "read_count": stats["read"],
                 "like_count": stats["like"],
                 "comment_count": stats["comment"],
                 "share_count": stats["share"],
                 "hot_score": hot,
                 "interact_score": interact,
-                "abnormal_score": abnormal
+                "abnormal_score": abnormal,
+                "created_at": now_utc()
             }).execute()
 
             print(f"✅ 插入: {art['title']}")
