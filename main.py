@@ -42,6 +42,42 @@ def format_publish_time(published):
 
     return str(published)
 
+# ===================== 时间衰减 =====================
+def time_decay(publish_time):
+    if not publish_time:
+        return 1
+
+    try:
+        pub = datetime.fromisoformat(publish_time.replace("Z", "+00:00"))
+        hours = (datetime.now(timezone.utc) - pub).total_seconds() / 3600
+        return max(hours, 1)
+    except:
+        return 1
+
+# ===================== 爆文算法 =====================
+def compute_advanced(stats, publish_time):
+    read = stats["read"]
+    like = stats["like"]
+    comment = stats["comment"]
+    share = stats["share"]
+
+    decay = time_decay(publish_time)
+    growth = read / decay  # 核心爆发力
+
+    # 简单归一化（防大号碾压）
+    norm = read / 10000
+
+    hot = (
+        growth * 0.6 +
+        (like + comment + share) * 0.3 +
+        norm * 0.1
+    )
+
+    interact = (like + comment + share) / max(read, 1)
+    abnormal = growth / max(read, 1)
+
+    return round(hot, 2), round(interact, 2), round(abnormal, 2)
+
 # ===================== 获取公众号 =====================
 def get_accounts():
     url = f"{WECHAT2RSS_URL}/list?page=1&size=100&k={WECHAT2RSS_KEY}"
@@ -89,25 +125,23 @@ def fetch_stats(url):
         print("❌ fetch_stats error:", e)
         return {"read":0,"like":0,"comment":0,"share":0}
 
-# ===================== 指标计算 =====================
-def compute(stats):
-    read = stats["read"]
-    like = stats["like"]
-    comment = stats["comment"]
-    share = stats["share"]
-
-    hot = read*0.5 + like*0.3 + share*0.1 + comment*0.1
-    interact = (like+comment+share)/max(read,1)
-    abnormal = (read+like+comment+share)/max(read,1)
-
-    return round(hot,2), round(interact,2), round(abnormal,2)
-
 # ===================== 去重 =====================
 def is_exist(url):
     res = supabase.table("wechat_articles") \
         .select("id", count="exact") \
         .eq("url", url) \
         .execute()
+    return res.count > 0
+
+# ===================== 榜单锁 =====================
+def has_generated_today():
+    today = today_utc()
+
+    res = supabase.table("hot_ranks") \
+        .select("id", count="exact") \
+        .eq("created_at", today) \
+        .execute()
+
     return res.count > 0
 
 # ===================== 生成排行榜 =====================
@@ -130,11 +164,6 @@ def generate_ranks():
     hot_top = sorted(articles, key=lambda x: x["hot_score"], reverse=True)[:5]
     interact_top = sorted(articles, key=lambda x: x["interact_score"], reverse=True)[:5]
     abnormal_top = sorted(articles, key=lambda x: x["abnormal_score"], reverse=True)[:5]
-
-    supabase.table("hot_ranks") \
-        .delete() \
-        .eq("created_at", today) \
-        .execute()
 
     def insert_rank(art, rank_type, value):
         supabase.table("hot_ranks").insert({
@@ -214,7 +243,6 @@ def send_daily_report():
     r = requests.post("https://api.resend.com/emails", headers=headers, json=body)
 
     print("📧 邮件状态:", r.status_code)
-    print(r.text)
 
 # ===================== 主程序 =====================
 if __name__ == "__main__":
@@ -238,27 +266,40 @@ if __name__ == "__main__":
                 continue
 
             stats = fetch_stats(art["link"])
-            hot, interact, abnormal = compute(stats)
 
-            supabase.table("wechat_articles").insert({
-                "title": art["title"],
-                "url": art["link"],
-                "account_id": art["account"],
-                "publish_time": format_publish_time(art.get("published")),
-                "read_count": stats["read"],
-                "like_count": stats["like"],
-                "comment_count": stats["comment"],
-                "share_count": stats["share"],
-                "hot_score": hot,
-                "interact_score": interact,
-                "abnormal_score": abnormal,
-                "created_at": now_utc()
-            }).execute()
+            hot, interact, abnormal = compute_advanced(
+                stats,
+                format_publish_time(art.get("published"))
+            )
 
-            print(f"✅ 插入: {art['title']}")
+            try:
+                supabase.table("wechat_articles").insert({
+                    "title": art["title"],
+                    "url": art["link"],
+                    "account_name": art["account"],
+                    "publish_time": format_publish_time(art.get("published")),
+                    "read_count": stats["read"],
+                    "like_count": stats["like"],
+                    "comment_count": stats["comment"],
+                    "share_count": stats["share"],
+                    "hot_score": hot,
+                    "interact_score": interact,
+                    "abnormal_score": abnormal,
+                    "created_at": now_utc()
+                }).execute()
+
+                print(f"✅ 插入: {art['title']}")
+
+            except Exception as e:
+                print("❌ 插入失败:", e)
+
             time.sleep(1)
 
-    generate_ranks()
-    send_daily_report()
+    # ✅ 榜单锁
+    if not has_generated_today():
+        generate_ranks()
+        send_daily_report()
+    else:
+        print("⚠️ 今日榜单已生成，跳过")
 
     print("🎉 完成")
