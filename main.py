@@ -32,7 +32,7 @@ def fetch_stats(url):
         api_url = "https://www.dajiala.com/fbmain/monitor/v3/read_zan_pro"
         body = {"url": url, "key": DAJIALA_API_KEY}
 
-        res = requests.post(api_url, json=body, timeout=10)
+        res = requests.post(api_url, json=body, timeout=20)
         data = res.json().get("data", {})
 
         return {
@@ -91,6 +91,6 @@ if __name__ == "__main__":
             except Exception as e:
                 print("❌ 插入失败:", e)
 
-            time.sleep(1)
+            time.sleep(2)
 
     print("🎉 完成")
