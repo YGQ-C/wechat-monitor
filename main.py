@@ -3,7 +3,7 @@ import requests
 import feedparser
 from supabase import create_client
 import time
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 
 # ===================== 环境变量 =====================
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -18,10 +18,30 @@ EMAIL_TO = os.getenv("EMAIL_TO")
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 print("✅ 数据库连接成功")
 
+# ===================== 时间处理 =====================
+def format_publish_time(published):
+    if not published:
+        return None
+
+    if isinstance(published, time.struct_time):
+        return datetime(*published[:6]).isoformat(timespec='seconds')
+
+    if isinstance(published, str):
+        return published
+
+    return str(published)
+
+def today_utc():
+    return datetime.now(timezone.utc).date().isoformat()
+
+def today_start_utc():
+    return datetime.now(timezone.utc).date().isoformat() + "T00:00:00Z"
+
 # ===================== 获取公众号 =====================
 def get_accounts():
     url = f"{WECHAT2RSS_URL}/list?page=1&size=100&k={WECHAT2RSS_KEY}"
     res = requests.get(url, timeout=15)
+    res.raise_for_status()
     return res.json().get("data", [])
 
 # ===================== 抓文章 =====================
@@ -36,7 +56,7 @@ def fetch_articles(feed_url, account_name, limit=5):
         articles.append({
             "title": entry.title,
             "link": entry.link,
-            "published": getattr(entry, "published", ""),
+            "published": getattr(entry, "published", None),
             "account": account_name
         })
 
@@ -48,8 +68,10 @@ def fetch_stats(url):
         api_url = "https://www.dajiala.com/fbmain/monitor/v3/read_zan_pro"
         body = {"url": url, "key": DAJIALA_API_KEY, "verifycode": ""}
 
-        res = requests.post(api_url, json=body, timeout=10).json()
-        data = res.get("data", {})
+        res = requests.post(api_url, json=body, timeout=10)
+        res.raise_for_status()
+
+        data = res.json().get("data", {})
 
         return {
             "read": data.get("read", 0),
@@ -57,7 +79,9 @@ def fetch_stats(url):
             "comment": max(data.get("comment_count", 0), 0),
             "share": data.get("share_num", 0)
         }
-    except:
+
+    except Exception as e:
+        print("❌ fetch_stats error:", e)
         return {"read":0,"like":0,"comment":0,"share":0}
 
 # ===================== 计算指标 =====================
@@ -75,15 +99,21 @@ def compute(stats):
 
 # ===================== 去重 =====================
 def is_exist(url):
-    res = supabase.table("wechat_articles").select("id").eq("url", url).execute()
-    return len(res.data) > 0
+    res = supabase.table("wechat_articles") \
+        .select("id", count="exact") \
+        .eq("url", url) \
+        .execute()
+    return res.count > 0
 
 # ===================== 生成排行榜 =====================
 def generate_ranks():
-    today = date.today()
+    today = today_utc()
+    today_start = today_start_utc()
 
-    # 取今天所有文章（关键：不是只看新数据）
-    res = supabase.table("wechat_articles").select("*").gte("created_at", str(today)).execute()
+    res = supabase.table("wechat_articles") \
+        .select("*") \
+        .gte("created_at", today_start) \
+        .execute()
 
     articles = res.data
     if not articles:
@@ -95,33 +125,28 @@ def generate_ranks():
     interact_top = sorted(articles, key=lambda x: x["interact_score"], reverse=True)[:5]
     abnormal_top = sorted(articles, key=lambda x: x["abnormal_score"], reverse=True)[:5]
 
-    # 清空今天旧榜
-    supabase.table("hot_ranks").delete().gte("created_at", str(today)).execute()
+    # 清空当天榜单（精确匹配）
+    supabase.table("hot_ranks") \
+        .delete() \
+        .eq("created_at", today) \
+        .execute()
 
-    # 写入榜单
-    for art in hot_top:
+    def insert_rank(art, rank_type, value):
         supabase.table("hot_ranks").insert({
             "article_id": art["id"],
-            "rank_type": "hot",
-            "rank_value": art["hot_score"],
+            "rank_type": rank_type,
+            "rank_value": value,
             "created_at": today
         }).execute()
+
+    for art in hot_top:
+        insert_rank(art, "hot", art["hot_score"])
 
     for art in interact_top:
-        supabase.table("hot_ranks").insert({
-            "article_id": art["id"],
-            "rank_type": "interact",
-            "rank_value": art["interact_score"],
-            "created_at": today
-        }).execute()
+        insert_rank(art, "interact", art["interact_score"])
 
     for art in abnormal_top:
-        supabase.table("hot_ranks").insert({
-            "article_id": art["id"],
-            "rank_type": "abnormal",
-            "rank_value": art["abnormal_score"],
-            "created_at": today
-        }).execute()
+        insert_rank(art, "abnormal", art["abnormal_score"])
 
     print("📊 排行榜生成完成")
 
@@ -131,23 +156,41 @@ def send_daily_report():
         print("⚠️ 邮件未配置")
         return
 
-    today = date.today().isoformat() 
+    today = today_utc()
 
-    res = supabase.table("hot_ranks").select("*").eq("created_at", str(today)).execute()
+    res = supabase.table("hot_ranks") \
+        .select("*") \
+        .eq("created_at", today) \
+        .execute()
+
     ranks = res.data
-
     if not ranks:
         print("⚠️ 没有排行榜数据，邮件不发")
         return
+
+    # 🚀 一次性查所有文章（解决N+1问题）
+    article_ids = [r["article_id"] for r in ranks]
+
+    arts_res = supabase.table("wechat_articles") \
+        .select("id,title,url") \
+        .in_("id", article_ids) \
+        .execute()
+
+    art_map = {a["id"]: a for a in arts_res.data}
 
     html = f"<h2>公众号日报 {today}</h2>"
 
     def render(rank_type, title):
         items = [r for r in ranks if r["rank_type"] == rank_type]
         html_block = f"<h3>{title}</h3>"
+
         for r in items:
-            art = supabase.table("wechat_articles").select("title,url").eq("id", r["article_id"]).execute().data[0]
+            art = art_map.get(r["article_id"])
+            if not art:
+                continue
+
             html_block += f"<p><a href='{art['url']}'>{art['title']}</a> - {r['rank_value']}</p>"
+
         return html_block
 
     html += render("hot", "🔥 热度榜")
@@ -196,7 +239,7 @@ if __name__ == "__main__":
                 "title": art["title"],
                 "url": art["link"],
                 "account_id": art["account"],
-                "publish_time": art["published"],
+                "publish_time": format_publish_time(art.get("published")),  # ✅ 修复
                 "read_count": stats["read"],
                 "like_count": stats["like"],
                 "comment_count": stats["comment"],
@@ -207,13 +250,9 @@ if __name__ == "__main__":
             }).execute()
 
             print(f"✅ 插入: {art['title']}")
-
             time.sleep(1)
 
-    # 👉 核心：生成排行榜
     generate_ranks()
-
-    # 👉 核心：发送邮件
     send_daily_report()
 
     print("🎉 完成")
